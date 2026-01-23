@@ -12,6 +12,13 @@ resource "local_file" "service_user_private" {
     directory_permission = "0700"
 }
 
+resource "local_file" "service_user_private_root" {
+  filename             = "${path.root}/${var.cert_out_dir}/service_user.pem"
+  sensitive_content    = tls_private_key.k3s_service_user_key.private_key_openssh
+  file_permission      = "0600"
+  directory_permission = "0700"
+}
+
 resource "local_file" "ansible_user_public" {
     filename             = "${path.module}/ansible/${var.cert_out_dir}/ansible_user.pub"
     content              = tls_private_key.k3s_ansible_user_key.public_key_openssh
