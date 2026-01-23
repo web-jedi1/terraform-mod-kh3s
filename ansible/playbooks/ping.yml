@@ -1,0 +1,8 @@
+---
+- name: Ping Hosts (DEBUG)
+  hosts: all
+  become: false
+  gather_facts: true
+  tasks:
+    - name: Ping
+      ansible.builtin.ping:

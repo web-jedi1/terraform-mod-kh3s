@@ -1,0 +1,161 @@
+---
+- name: Bootstrap Helm
+  hosts: k3s_masters[0]
+  become: true
+  gather_facts: false
+  tasks:
+
+    - name: Prerequisite Packages
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - curl
+          - gnupg
+          - python3-kubernetes
+          - apache2-utils # needed for htpasswd utility
+        state: present
+        update_cache: true
+
+    - name: Add Helm GPG key
+      ansible.builtin.apt_key:
+        url: https://packages.buildkite.com/helm-linux/helm-debian/gpgkey
+        keyring: /usr/share/keyrings/helm.gpg
+        state: present
+
+    - name: Add Helm APT repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/helm.gpg] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main"
+        state: present
+
+    - name: Update APT cache
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Install Helm
+      ansible.builtin.apt:
+        name: helm
+        update_cache: true
+
+- name: Bootstrap Cilium with Helm
+  hosts: k3s_masters[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for K3s to be ready
+      ansible.builtin.wait_for:
+        path: /etc/rancher/k3s/k3s.yaml
+        state: present
+        timeout: 120
+
+    - name: Wait for K3s API server to be responsive
+      ansible.builtin.command: kubectl get nodes
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: kubectl_nodes
+      until: kubectl_nodes.rc == 0
+      retries: 10
+      delay: 10
+      changed_when: false
+
+    - name: Get K3s API server address
+      ansible.builtin.command: hostname -I
+      register: node_ip
+      changed_when: false
+
+    - name: Add Cilium Helm repository
+      kubernetes.core.helm_repository:
+        name: cilium
+        repo_url: https://helm.cilium.io/
+
+    - name: Install Cilium via Helm
+      kubernetes.core.helm:
+        name: cilium
+        chart_ref: cilium/cilium
+        chart_version: 1.18.5
+        release_namespace: kube-system
+        create_namespace: false
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        values:
+          encryption:
+            enabled: true
+            type: wireguard
+          ipam:
+            operator:
+              clusterPoolIPv4PodCIDRList:
+                - "10.42.0.0/16"
+          k8sServiceHost: "{{ ansible_host_private }}"
+          k8sServicePort: 6443
+          kubeProxyReplacement: "true"
+          ipv6:
+            enabled: false
+          hubble:
+            enabled: true
+            tls:
+              enabled: true
+              auto:
+                enabled: true
+                method: helm
+            relay:
+              enabled: true
+              tls:
+                server:
+                  enabled: true
+                client:
+                  enabled: true
+            ui:
+              enabled: true
+            metrics:
+              enabled:
+                - dns
+                - drop
+                - tcp
+                - flow
+                - port-distribution
+                - icmp
+                - http
+
+          prometheus:
+            enabled: true
+
+          operator:
+            prometheus:
+              enabled: true
+
+    - name: Fix Hubble peer service for multi-node clusters
+      kubernetes.core.k8s:
+        state: patched
+        kind: Service
+        name: hubble-peer
+        namespace: kube-system
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        definition:
+          spec:
+            internalTrafficPolicy: Cluster
+
+    - name: Wait for Cilium DaemonSet to be ready
+      ansible.builtin.command: kubectl rollout status daemonset/cilium -n kube-system --timeout=5m
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: false
+
+    - name: Wait for Hubble Relay to be ready
+      ansible.builtin.command: kubectl rollout status deployment/hubble-relay -n kube-system --timeout=5m
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: false
+
+#   become: false
+#   gather_facts: false
+#   tasks:
+#     - name: Update kubeconfig server address
+#       delegate_to: localhost
+#       replace:
+#         path: "{{ playbook_dir }}/../../terraform/cert/k3s.yaml"
+#         regexp: 'https://127\.0\.0\.1:6443'
+#         replace: "https://{{ ansible_host }}:6443"
+
+#     - name: Set kubeconfig permissions
+#       delegate_to: localhost
+#       file:
+#         path: "{{ playbook_dir }}/../../terraform/cert/k3s.yaml"
+#         mode: '0600'

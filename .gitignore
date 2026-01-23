@@ -1,0 +1,15 @@
+**/*.tfvars
+**/*tfout
+**/.terraform
+**/*.lock.hcl
+**/*.lock.info
+**/*.tfstate
+**/*.backup
+**/*tfplan*
+**/secrets
+**/out
+**/cert
+**/hosts.ini
+**/.ansible
+**/ansible.cfg
+.vscode

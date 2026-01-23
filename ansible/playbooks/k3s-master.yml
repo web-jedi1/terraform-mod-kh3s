@@ -1,0 +1,203 @@
+---
+- name: Pre-flight checks
+  hosts: k3s_masters
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for cloud-init
+      ansible.builtin.shell: cloud-init status --wait
+      changed_when: false
+
+    - name: Wait for apt lock
+      ansible.builtin.shell: >
+        while fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+          sleep 1
+        done
+      changed_when: false
+
+- name: Prepare node network config
+  hosts: k3s_masters
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Disable IPv6 on all interfaces
+      ansible.posix.sysctl:
+        name: "{{ item }}"
+        value: '1'
+        state: present
+        sysctl_set: yes
+        reload: yes
+      loop:
+        - net.ipv6.conf.all.disable_ipv6
+        - net.ipv6.conf.default.disable_ipv6
+        - net.ipv6.conf.lo.disable_ipv6
+
+- name: Bootstrap and join K3s masters (HA, embedded etcd)
+  hosts: k3s_masters
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Set bootstrap master host (first in group)
+      ansible.builtin.set_fact:
+        k3s_bootstrap_host: "{{ groups['k3s_masters'][0] }}"
+
+    - name: Install Prerequisite Packages
+      ansible.builtin.apt:
+        name:
+          - apparmor
+          - apparmor-utils
+          - wireguard
+        update_cache: true
+
+    - name: Ensure ip forwarding is enabled
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        state: present
+        reload: true
+
+    - name: Check if K3S has already been bootstrapped (token exists)
+      ansible.builtin.stat:
+        path: /root/k3s_token
+      register: k3s_server_bootstrap_state
+      when: inventory_hostname == k3s_bootstrap_host
+
+    - name: Print positive bootstrap result
+      ansible.builtin.debug:
+        msg: "K3S is already bootstrapped on {{ k3s_bootstrap_host }}"
+      when:
+        - inventory_hostname == k3s_bootstrap_host
+        - k3s_server_bootstrap_state.stat.exists
+
+    - name: Print negative bootstrap result
+      ansible.builtin.debug:
+        msg: "K3S is not bootstrapped on {{ k3s_bootstrap_host }}, starting bootstrap process ..."
+      when:
+        - inventory_hostname == k3s_bootstrap_host
+        - not k3s_server_bootstrap_state.stat.exists
+
+    - name: Generate K3S token for bootstrap
+      ansible.builtin.command:
+        cmd: openssl rand -hex 64
+      register: k3s_token_gen
+      when:
+        - inventory_hostname == k3s_bootstrap_host
+        - not k3s_server_bootstrap_state.stat.exists
+      changed_when: true
+
+    - name: Save K3S token to file
+      ansible.builtin.copy:
+        dest: /root/k3s_token
+        content: "{{ k3s_token_gen.stdout }}"
+        mode: "0600"
+      when:
+        - inventory_hostname == k3s_bootstrap_host
+        - not k3s_server_bootstrap_state.stat.exists
+
+    - name: Read K3S token from bootstrap master
+      ansible.builtin.slurp:
+        src: /root/k3s_token
+      register: k3s_token_slurped
+      when: inventory_hostname == k3s_bootstrap_host
+
+    - name: Set cluster K3S token fact (from bootstrap host)
+      ansible.builtin.set_fact:
+        k3s_token_value: "{{ hostvars[k3s_bootstrap_host]['k3s_token_slurped']['content'] | b64decode | trim }}"
+      when: hostvars[k3s_bootstrap_host]['k3s_token_slurped'] is defined
+
+    # Bootstrap first master node
+    - name: Bootstrap K3S on bootstrap master
+      ansible.builtin.shell: >
+        curl -sfL https://get.k3s.io | sh -s - server
+        --cluster-init
+        --tls-san={{ ansible_host_private }}
+        --node-ip={{ ansible_host_private }}
+        --advertise-address={{ ansible_host_private }}
+        --flannel-backend=none
+        --disable-network-policy
+        --disable=traefik
+        --node-label workload-type=control-plane
+        --node-label environment={{ env }}
+        --node-label node.kubernetes.io/instance-type={{ hetzner_instance_type }}
+      environment:
+        K3S_TOKEN: "{{ k3s_token_value }}"
+      args:
+        creates: /usr/local/bin/k3s
+      when:
+        - inventory_hostname == k3s_bootstrap_host
+        - not k3s_server_bootstrap_state.stat.exists
+
+    - name: Wait for bootstrap master K3s API to be ready
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[k3s_bootstrap_host].ansible_host_private }}"
+        port: 6443
+        delay: 10
+        timeout: 300
+      when: inventory_hostname != k3s_bootstrap_host
+
+    - name: Verify bootstrap master is fully ready
+      ansible.builtin.command: kubectl get nodes
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: nodes_check
+      until: nodes_check.rc == 0
+      retries: 30
+      delay: 10
+      when: inventory_hostname == k3s_bootstrap_host
+      changed_when: false
+
+    # Join other masters
+    - name: Check if server is already in cluster (k3s binary present)
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_server_bootstrap_state_other
+
+    - name: Print positive bootstrap result (already part of cluster)
+      ansible.builtin.debug:
+        msg: "K3S already seems bootstrapped on {{ inventory_hostname }}"
+      when:
+        - k3s_server_bootstrap_state_other.stat.exists
+        - inventory_hostname != k3s_bootstrap_host
+
+    - name: Join other K3S master nodes
+      ansible.builtin.shell: >
+        curl -sfL https://get.k3s.io | sh -s - server
+        --server https://{{ hostvars[k3s_bootstrap_host].ansible_host_private }}:6443
+        --tls-san={{ ansible_host_private }}
+        --node-ip={{ ansible_host_private }}
+        --advertise-address={{ ansible_host_private }}
+        --flannel-backend=none
+        --disable-network-policy
+        --disable=traefik
+        --node-label workload-type=control-plane
+        --node-label environment={{ env }}
+        --node-label node.kubernetes.io/instance-type={{ hetzner_instance_type }}
+      environment:
+        K3S_TOKEN: "{{ k3s_token_value }}"
+      args:
+        creates: /usr/local/bin/k3s
+      when:
+        - not k3s_server_bootstrap_state_other.stat.exists
+        - inventory_hostname != k3s_bootstrap_host
+
+#    - name: Join other K3S master nodes (flannel CNI)
+#      ansible.builtin.shell: >
+#        curl -sfL https://get.k3s.io | sh -s - server
+#        --server https://{{ hostvars[k3s_bootstrap_host].ansible_host_private }}:6443
+#        --tls-san={{ ansible_host_private }}
+#        --node-ip={{ ansible_host_private }}
+#        --advertise-address={{ ansible_host_private }}
+#        --flannel-backend=wireguard-native
+#        --disable=traefik
+#        --node-label workload-type=control-plane
+#        --node-label environment={{ env }}
+#        --node-label node.kubernetes.io/instance-type={{ hetzner_instance_type }}
+#      environment:
+#        K3S_TOKEN: "{{ k3s_token_value }}"
+#      args:
+#        creates: /usr/local/bin/k3s
+#      when:
+#        - not k3s_server_bootstrap_state_other.stat.exists
+#        - inventory_hostname != k3s_bootstrap_host

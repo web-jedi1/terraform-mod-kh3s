@@ -1,0 +1,51 @@
+#cloud-config
+users:
+  - name: ${service_user_name}
+    groups: sudo, users
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${service_user_key}
+  - name: ${ansible_user_name}
+    groups: sudo, users
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${ansible_user_key}
+
+hostname: ${hostname}
+
+packages:
+  - fail2ban
+  - ufw
+package_update: true
+package_upgrade: true
+
+runcmd:
+    - printf "[sshd]\nenabled = true\nbanaction = iptables-multiport" > /etc/fail2ban/jail.local
+    - systemctl enable fail2ban && systemctl restart fail2ban
+    - ufw logging on
+    - ufw default deny incoming
+    - ufw default allow outgoing
+    - ufw default allow routed # required for CNI
+    - ufw allow ssh
+    - ufw allow proto icmp from ${subnet_k3s_master_cidr}
+    - ufw allow proto icmp from ${subnet_k3s_worker_cidr}
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 10250 proto tcp # kubelet api
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 8472 proto udp # cilium vxlan
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 8472 proto udp # cilium vxlan
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 4240 proto udp # cilium health check
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 4240 proto udp # cilium health check
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 51871 proto udp # cilium wireguard
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 51871 proto udp # cilium wireguard
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 4244 proto tcp # hubble relay
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 4244 proto tcp # hubble relay
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 9962 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 9962 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 9964 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 9964 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 9965 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 9965 proto tcp # cilium metrics
+    - ufw allow from ${lb_ip} to any port 80,443 proto tcp # allow lb traffic to ingress resource
+    - ufw enable
+    - ufw reload

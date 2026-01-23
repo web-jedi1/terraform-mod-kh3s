@@ -1,0 +1,11 @@
+[defaults]
+inventory = ../terraform-mod-kh3s/../ansible/inventory/hosts.ini
+roles_path = ./roles
+# SSH
+remote_user = svc-ansible
+host_key_checking = False
+private_key_file = ../terraform-mod-kh3s/cert/ansible_user.pem 
+
+# TODO: let terraform auto create known hosts file, pass as ssh_args here.
+[ssh_connection]
+ssh_args = -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null

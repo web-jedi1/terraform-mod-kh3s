@@ -1,0 +1,56 @@
+#cloud-config
+users:
+  - name: ${service_user_name}
+    groups: sudo, users
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${service_user_key}
+  - name: ${ansible_user_name}
+    groups: sudo, users
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${ansible_user_key}
+
+hostname: ${hostname}
+
+packages:
+  - fail2ban
+  - ufw
+package_update: true
+package_upgrade: true
+
+runcmd:
+    - printf "[sshd]\nenabled = true\nbanaction = iptables-multiport" > /etc/fail2ban/jail.local
+    - systemctl enable fail2ban && systemctl restart fail2ban
+    - ufw logging on
+    - ufw default deny incoming
+    - ufw default allow outgoing
+    - ufw default allow routed # required for CNI
+    - ufw allow ssh
+    - ufw allow proto icmp from ${subnet_k3s_master_cidr} # ICMP in own subnet
+    - ufw allow proto icmp from ${subnet_k3s_worker_cidr} # ICMP in own subnet
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 6443 proto tcp # K8S API Server
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 6443 proto tcp # K8S API Server
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 2379 proto tcp # K8S etcd client
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 2380 proto tcp # K8S etcd server
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 10250 proto tcp # K8S kubelet API
+    - ufw allow from 127.0.0.1 to any port 10251 proto tcp # K8S kube-scheduler
+    - ufw allow from 127.0.0.1 to any port 10252 proto tcp # K8S kube-controller-manager
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 8472 proto udp # cilium vxlan
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 8472 proto udp # cilium vxlan
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 4240 proto tcp # cilium health check
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 4240 proto tcp # cilium health check
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 51871 proto udp # cilium wireguard
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 51871 proto udp # cilium wireguard
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 4244 proto tcp # hubble relay
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 4244 proto tcp # hubble relay
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 9962 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 9962 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 9964 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 9964 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_master_cidr} to any port 9965 proto tcp # cilium metrics
+    - ufw allow from ${subnet_k3s_worker_cidr} to any port 9965 proto tcp # cilium metrics
+    - ufw enable
+    - ufw reload

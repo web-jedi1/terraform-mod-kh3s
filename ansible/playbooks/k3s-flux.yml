@@ -1,0 +1,88 @@
+---
+- name: Install Flux v2 operator and create SSH secret
+  hosts: k3s_masters[0]
+  become: true
+  gather_facts: false
+  vars:
+    flux_namespace: flux-system
+    flux_release_name: flux
+    flux_chart_repo: https://fluxcd-community.github.io/helm-charts
+    flux_chart_name: flux2
+
+  tasks:
+    - name: Ensure Flux namespace exists
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ flux_namespace }}"
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+
+    - name: Add Flux Helm repository
+      kubernetes.core.helm_repository:
+        name: fluxcd-community
+        repo_url: "{{ flux_chart_repo }}"
+
+    - name: Install Flux operator via Helm
+      kubernetes.core.helm:
+        name: "{{ flux_release_name }}"
+        chart_ref: fluxcd-community/flux2
+        release_namespace: "{{ flux_namespace }}"
+        create_namespace: false
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        wait: true
+
+    - name: Create GitHub PAT secret for Flux
+      kubernetes.core.k8s:
+        state: present
+        force: true
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: flux-git-auth
+            namespace: "{{ flux_namespace }}"
+          stringData:
+            username: "git"  # using token only
+            password: "{{ lookup('env', 'FLUX_GIT_TOKEN') }}"
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+      no_log: false # true - hide the token in logs, though it doesnt get printed anyways
+
+    - name: Create Flux GitRepository
+      kubernetes.core.k8s:
+        state: present
+        apply: true
+        definition:
+          apiVersion: source.toolkit.fluxcd.io/v1beta2
+          kind: GitRepository
+          metadata:
+            name: flux-system
+            namespace: "{{ flux_namespace }}"
+          spec:
+            interval: 1m
+            url: "{{ lookup('env', 'FLUX_GIT_URL') }}"
+            ref:
+              branch: "main"
+            secretRef:
+              name: flux-git-auth
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+
+    - name: Create root Flux Kustomization (./flux/kustomization.yml)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: kustomize.toolkit.fluxcd.io/v1
+          kind: Kustomization
+          metadata:
+            name: flux-root
+            namespace: "{{ flux_namespace }}"
+          spec:
+            interval: 1m
+            path: ./flux
+            prune: true
+            sourceRef:
+              kind: GitRepository
+              name: flux-system
+        kubeconfig: /etc/rancher/k3s/k3s.yaml

@@ -1,0 +1,95 @@
+---
+- name: Pre-flight checks
+  hosts: k3s_workers
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for cloud-init
+      ansible.builtin.shell: cloud-init status --wait
+      changed_when: false
+
+    - name: Wait for apt lock
+      ansible.builtin.shell: >
+        while fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+          sleep 1
+        done
+      changed_when: false
+
+- name: Prepare node network config
+  hosts: k3s_masters
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Disable IPv6 on all interfaces
+      ansible.posix.sysctl:
+        name: "{{ item }}"
+        value: '1'
+        state: present
+        sysctl_set: yes
+        reload: yes
+      loop:
+        - net.ipv6.conf.all.disable_ipv6
+        - net.ipv6.conf.default.disable_ipv6
+        - net.ipv6.conf.lo.disable_ipv6
+
+- name: Install prerequisites and join workers to K3s cluster
+  hosts: k3s_workers
+  become: true
+  gather_facts: false
+
+  vars:
+    k3s_bootstrap_host: "{{ groups['k3s_masters'][0] }}"
+
+  tasks:
+    - name: Install prerequisite packages
+      ansible.builtin.apt:
+        name:
+          - apparmor
+          - apparmor-utils
+          - wireguard
+        update_cache: true
+
+    # Read token once from the bootstrap master
+    - name: Read K3S token from bootstrap master
+      ansible.builtin.slurp:
+        src: /root/k3s_token
+      register: k3s_token_slurped
+      delegate_to: "{{ k3s_bootstrap_host }}"
+      run_once: true
+
+    - name: Decode K3S token and server IP
+      ansible.builtin.set_fact:
+        k3s_token_value: "{{ k3s_token_slurped.content | b64decode | trim }}"
+        k3s_server_value: "{{ hostvars[k3s_bootstrap_host].ansible_host_private }}"
+      run_once: true
+
+    - name: Check if worker node has been joined
+      ansible.builtin.stat:
+        path: /etc/rancher/node
+      register: k3s_worker_state
+
+    - name: Join K3S worker node to cluster
+      ansible.builtin.shell: >
+        curl -sfL https://get.k3s.io | sh -s - agent
+        --node-ip={{ ansible_host_private }}
+        --node-label environment={{ env }}
+        --node-label node.kubernetes.io/instance-type={{ hetzner_instance_type }}
+        --node-label workload-type={{ workload }}
+      environment:
+        K3S_TOKEN: "{{ k3s_token_value }}"
+        K3S_URL: "https://{{ k3s_server_value }}:6443"
+      when: not k3s_worker_state.stat.exists
+
+    - name: Set bootstrap master host (first in group)
+      ansible.builtin.set_fact:
+        k3s_bootstrap_host: "{{ groups['k3s_masters'][0] }}"
+
+    - name: Label worker nodes as Workers
+      ansible.builtin.shell: >
+        kubectl label node {{ inventory_hostname }}
+        node-role.kubernetes.io/worker=true
+        --overwrite
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      delegate_to: "{{ k3s_bootstrap_host }}"

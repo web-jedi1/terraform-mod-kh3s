@@ -1,0 +1,10 @@
+[defaults]
+inventory = ${inventory_file}
+roles_path = ./roles
+# SSH
+remote_user = ${service_user}
+private_key_file = ${service_user_key} 
+
+# TODO: let terraform auto create known hosts file, pass as ssh_args here.
+[ssh_connection]
+ssh_args = -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null

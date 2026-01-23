@@ -1,0 +1,127 @@
+---
+- name: Nuke K3S off all K3S Workers
+  hosts: k3s_workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop K3S agent service
+      ansible.builtin.systemd:
+        name: k3s-agent
+        state: stopped
+      ignore_errors: true
+
+    - name: Run K3S agent uninstall script
+      ansible.builtin.shell: /usr/local/bin/k3s-agent-uninstall.sh
+      ignore_errors: true
+
+    - name: Remove K3S worker directories
+      ansible.builtin.file:
+        state: absent
+        path: "{{ item }}"
+      loop:
+        - /etc/rancher/node
+        - /var/lib/rancher/k3s
+        - /var/lib/rancher
+        - /etc/rancher
+      ignore_errors: true
+
+    - name: Remove K3S binary and symlinks
+      ansible.builtin.file:
+        state: absent
+        path: "{{ item }}"
+      loop:
+        - /usr/local/bin/k3s
+        - /usr/local/bin/kubectl
+        - /usr/local/bin/crictl
+        - /usr/local/bin/ctr
+      ignore_errors: true
+
+- name: Nuke K3S off all K3S Masters
+  hosts: k3s_masters
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop K3S service
+      ansible.builtin.systemd:
+        name: k3s
+        state: stopped
+      ignore_errors: true
+
+    - name: Kill all K3S processes
+      ansible.builtin.shell: /usr/local/bin/k3s-killall.sh
+      ignore_errors: true
+
+    - name: Run K3S uninstall script
+      ansible.builtin.shell: /usr/local/bin/k3s-uninstall.sh
+      ignore_errors: true
+
+    - name: Remove K3S master directories
+      ansible.builtin.file:
+        state: absent
+        path: "{{ item }}"
+      loop:
+        - /var/lib/rancher/k3s
+        - /var/lib/rancher
+        - /etc/rancher/k3s
+        - /etc/rancher
+      ignore_errors: true
+
+    - name: Remove K3S token from bootstrap master
+      ansible.builtin.file:
+        state: absent
+        path: /root/k3s_token
+      ignore_errors: true
+
+    - name: Remove K3S binary and symlinks
+      ansible.builtin.file:
+        state: absent
+        path: "{{ item }}"
+      loop:
+        - /usr/local/bin/k3s
+        - /usr/local/bin/kubectl
+        - /usr/local/bin/crictl
+        - /usr/local/bin/ctr
+        - /usr/local/bin/k3s-killall.sh
+        - /usr/local/bin/k3s-uninstall.sh
+      ignore_errors: true
+
+    - name: Clean up systemd units
+      ansible.builtin.file:
+        state: absent
+        path: "{{ item }}"
+      loop:
+        - /etc/systemd/system/k3s.service
+        - /etc/systemd/system/k3s.service.env
+        - /etc/systemd/system/multi-user.target.wants/k3s.service
+      ignore_errors: true
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+- name: Final cleanup on all nodes
+  hosts: k3s_masters:k3s_workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Remove CNI configuration
+      ansible.builtin.file:
+        state: absent
+        path: "{{ item }}"
+      loop:
+        - /etc/cni/net.d
+        - /opt/cni/bin
+      ignore_errors: true
+
+    - name: Remove containerd state
+      ansible.builtin.file:
+        state: absent
+        path: "{{ item }}"
+      loop:
+        - /run/k3s
+        - /run/containerd
+      ignore_errors: true
+
+    - name: Display nuke completion message
+      ansible.builtin.debug:
+        msg: "K3S has been completely nuked from {{ inventory_hostname }}"
