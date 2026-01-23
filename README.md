@@ -60,6 +60,7 @@ module "k3s_cluster" {
             server_type    = "cax11"
             classification = "master"
             environment    = "production"
+            workload       = "control-plane"
         },
         "k3s-master-02" = {
             hostname       = "k3s-master-02"
@@ -67,6 +68,7 @@ module "k3s_cluster" {
             server_type    = "cax11"
             classification = "master"
             environment    = "production"
+            workload       = "control-plane"
         },
         "k3s-master-03" = {
             hostname       = "k3s-master-03"
@@ -74,6 +76,7 @@ module "k3s_cluster" {
             server_type    = "cax11"
             classification = "master"
             environment    = "production"
+            workload       = "control-plane"
         }
     }
     custom_worker_nodes = {
